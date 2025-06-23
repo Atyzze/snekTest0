@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MyAI</title>
+  <link rel="icon" type="image/png" href="snek.jpg">
+  <style>
+    body { margin: 0; font-family: sans-serif; text-align: center; padding: 2em 1em 200px; background-color: #000; }
+    table { margin: 0 auto; width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); table-layout: fixed; }
+    td.td-title { width: 270px; text-align: left; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0.8em 1em; }
+    td { padding: 0.8em 1em; vertical-align: middle;  background-color:#000; color:#fff}
+    .td-player audio { width: 100%; }
+    .td-delete { width: 20px; text-align: center; }
+    button { font-size: 1em; padding: 0.3em 0.6em; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; border-radius: 4px; margin: 0 0.2em; white-space: nowrap; }
+    #footer { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); width: 50%; max-width: 400px; background: #fff; padding: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-radius: 20px; display: flex; flex-direction: column; align-items: center; }
+   
+    #recordBtn { font-size: 1.5em; padding: 1em; width: 100%; border: none; background: #d9534f; color: #fff; cursor: pointer; transition: 0.3s; border-radius: 25px; white-space: nowrap; }
+    #recordBtn:hover { background: #c9302c; }
+    #recordBtn.recording { background: #5cb85c; }
+    #recordBtn.recording:hover { background: #4cae4c; }
+    #pagination { margin: 1em 0; }
+    .progress-cell { display: flex; flex-direction: column; align-items: center; gap: 0.5em; }
+    .progress-cell progress { width: 100%; }
+#fullscreenBtn {
+  margin-top: 0.5em;
+  font-size: 0.9em;
+  background: #e6e6e6;
+}
+ 
+
+#visualizer {
+  display: none;
+  width: 100%;
+  
+  border-radius: 12px;
+margin-bottom: 10px;
+}
+
+#fullscreenBtn {
+  position: absolute;
+  top: -10px;
+  right: 0px;
+  background: transparent;
+  border: none;
+   padding:0;
+    margin:0;
+ font-size: 3em;
+  z-index: 10;
+  color: white;
+ 
+}
+
+
+
+  </style>
+</head>
+<body>
+ 
+
+  <table id="recordingsTable"><tbody></tbody></table>
+  <div id="pagination">
+    <button id="prevPageBtn">« Previous</button>
+    <span id="pageInfo" style="color:white;"></span>
+    <button id="nextPageBtn">Next »</button>
+  </div>
+
+  <div id="footer">
+    <canvas id="visualizer"></canvas>
+<div id="fpsDisplay" style="
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: white;
+    display:none;
+  background: rgba(0,0,0,0.5);
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 13px;
+  z-index: 5;
+  pointer-events: none;
+">FPS: 0</div>
+ <button id="recordBtn">Start Recording</button>
+  </div>
+
+
+  <script src="https://unpkg.com/lamejs@1.2.0/lame.min.js"></script>
+  <script src="https://unpkg.com/nosleep.js@0.12.0/dist/NoSleep.min.js"></script>
+  <script type="module">
+    import { openDB } from 'https://unpkg.com/idb@8.0.3/build/index.js?module';
+
+    /* ----------------------------- DB CONSTANTS ----------------------------- */
+    const DB = 'voice-notes-db', STORE = 'recordings', PAGE_SIZE = 25;
+    let currentPage = 0;
+    const noSleep = new NoSleep();
+    const dbPromise = openDB(DB, 1, {
+      upgrade(db) {
+        const s = db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+        s.createIndex('by-date', 'timestamp');
+      }
+    });
+
+
+
+    /* ------------------------------- HELPERS -------------------------------- */
+    const addRec      = rec => dbPromise.then(db => db.add(STORE, rec));
+    const getAll      = ()  => dbPromise.then(db => db.getAllFromIndex(STORE,'by-date')).then(a=>a.reverse());
+    const updateRec   = rec => dbPromise.then(db => db.put(STORE, rec));
+    const deleteRec   = id  => dbPromise.then(db => db.delete(STORE, id));
+
+    const formatDuration = ms => {
+      const sec = Math.floor(ms/1000), h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s=sec%60;
+      const p = n=>String(n).padStart(2,'0');
+      return h?`${p(h)}:${p(m)}:${p(s)}`:`${p(m)}:${p(s)}`;
+    };
+
+    const getTS = () => {
+      const d=new Date(), p=n=>String(n).padStart(2,'0');
+      return { date:`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`, time:`${p(d.getHours())}:${p(d.getMinutes())}` };
+    };
+
+    /* ------------------------------- RENDER --------------------------------- */
+    async function render() {
+      const all = await getAll();
+      const t = all.length;
+      const tbody = document.querySelector('#recordingsTable tbody');
+      tbody.innerHTML = '';
+      document.getElementById('pagination').style.display = t>PAGE_SIZE?'block':'none';
+      const start = currentPage*PAGE_SIZE;
+      all.slice(start, start+PAGE_SIZE).forEach(r => tbody.appendChild(createRow(r)));
+      document.getElementById('pageInfo').textContent = `Page ${currentPage+1} of ${Math.ceil(t/PAGE_SIZE)}`;
+      document.getElementById('prevPageBtn').disabled = currentPage===0;
+      document.getElementById('nextPageBtn').disabled = start+PAGE_SIZE>=t;
+    }
+
+    document.getElementById('prevPageBtn').onclick = () => { if(currentPage) { currentPage--; render(); }};
+    document.getElementById('nextPageBtn').onclick = () => { currentPage++; render(); };
+
+    /* ------------------------- TABLE ROW GENERATORS ------------------------- */
+    function createRow({id, filename, blob}) {
+      const url = URL.createObjectURL(blob);
+      const tr = document.createElement('tr');
+      tr.id = `rec-${id}`;                       // 🔸 allow progress updates later
+      const td = (c, t) => Object.assign(document.createElement('td'), { className: c, textContent: t });
+
+      // delete button
+      const deleteCell = td('td-delete', '');
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '🗑️';
+      delBtn.onclick = async () => {
+        if (!confirm('Are you sure you want to delete this recording?')) return;
+        await deleteRec(id);
+        render();
+      };
+      deleteCell.append(delBtn);
+
+      // title cell
+      const titleCell = td('td-title', filename);
+
+      // player cell
+      const playerCell = (() => {
+        const c = td('td-player', '');
+        const a = document.createElement('audio');
+        a.controls = true;
+        a.src = url;
+        a.title = `${filename}.${blob.type==='audio/mpeg'?'mp3':'webm'}`;
+        c.append(a);
+        return c;
+      })();
+
+      tr.append(deleteCell, titleCell, playerCell);
+      return tr;
+    }
+
+    function createLiveRow(title) {
+      const tr = document.createElement('tr');
+      tr.id = 'live-row';
+      tr.dataset.title = title;
+
+      const td = (c, t) => Object.assign(document.createElement('td'), { className: c, textContent: t });
+
+      // empty delete-icon cell, title, placeholder
+      tr.append(td('td-delete',''), td('td-title', title), td('td-player','Recording…'));
+      document.querySelector('#recordingsTable tbody').prepend(tr);
+      return tr;
+    }
+
+    function showConversionRow() {
+      const row = document.getElementById('live-row');
+      const title = row.dataset.title;
+      row.innerHTML = '';
+      const td = (c, t) => Object.assign(document.createElement('td'), { className: c, textContent: t });
+      const deleteCell = td('td-delete','');
+      const titleCell  = td('td-title', title);
+      const progressCell = document.createElement('td');
+      progressCell.className = 'progress-cell';
+      const progressBar = Object.assign(document.createElement('progress'), { max:100, value:0 });
+      const est = document.createElement('span');
+      est.textContent = 'Estimating…';
+      progressCell.append(progressBar, est);
+
+      // stash refs
+      row.progressBar  = progressBar;
+      row.estimateSpan = est;
+      row.append(deleteCell, titleCell, progressCell);
+    }
+
+    /* ------------------------- MP3 CONVERSION UTILS ------------------------- */
+    async function convertWebMtoMp3(webmBlob, onProgress){
+      const arrayBuffer = await webmBlob.arrayBuffer();
+      const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      const numCh = audioBuffer.numberOfChannels;
+      const sampleRate = audioBuffer.sampleRate;
+      const bitRate = 128;
+      const mp3enc = new lamejs.Mp3Encoder(numCh, sampleRate, bitRate);
+
+
+
+      await new Promise(r => requestAnimationFrame(r));
+      // Float32 ➜ Int16 once per channel
+      const channelData = [];
+      for (let ch=0; ch<numCh; ch++) {
+        const float32 = audioBuffer.getChannelData(ch);
+        const int16   = new Int16Array(float32.length);
+        for (let i=0;i<float32.length;i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          int16[i] = s<0 ? s*0x8000 : s*0x7FFF;
+        }
+        channelData.push(int16);
+      }
+
+      const totalSamples = channelData[0].length;
+      const desiredChunks = 100;
+      const rawChunk = Math.max(256, Math.floor(totalSamples/desiredChunks));
+      const maxSamples = rawChunk;
+      const mp3Data = [];
+      const startTime = performance.now();
+
+      for (let i=0;i<totalSamples;i+=maxSamples) {
+        const left  = channelData[0].subarray(i, i+maxSamples);
+        const mp3buf = (numCh===2)
+          ? mp3enc.encodeBuffer(left, channelData[1].subarray(i, i+maxSamples))
+          : mp3enc.encodeBuffer(left);
+        if (mp3buf.length) mp3Data.push(mp3buf);
+
+        if (onProgress) {
+          const pct = Math.min(1,(i+maxSamples)/totalSamples);
+          const elapsed = (performance.now()-startTime)/1000;
+          const estTotal = elapsed / pct;
+          onProgress?.(pct, estTotal - elapsed);
+console.log(`Progress: ${Math.round(pct * 100)}%, ETA: ${formatDuration((estTotal - elapsed)*1000)}`);
+
+        }
+        await new Promise(r => requestAnimationFrame(r));
+      }
+      const tail = mp3enc.flush();
+      if (tail.length) mp3Data.push(tail);
+      return new Blob(mp3Data, {type:'audio/mpeg'});
+    }
+
+    /* ------------------- RECORDING / UI / STATE MANAGEMENT ------------------ */
+    let mediaRecorder, audioCtx, analyser, dataArr, visualizerId, audioChunks, liveStart, stream, timer;
+    const canvas = document.getElementById('visualizer');
+    const ctx    = canvas.getContext('2d');
+    const recordBtn = document.getElementById('recordBtn');
+
+    function drawViz(){
+      analyser.getByteTimeDomainData(dataArr);
+      ctx.fillStyle='#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.lineWidth=2; ctx.strokeStyle='white'; ctx.beginPath();
+      const slice = canvas.width/dataArr.length; let x=0;
+      dataArr.forEach((v,i)=>{ const y=(v/128)*(canvas.height/2); i?ctx.lineTo(x,y):ctx.moveTo(x,y); x+=slice; });
+      ctx.lineTo(canvas.width,canvas.height/2); ctx.stroke();
+      visualizerId = requestAnimationFrame(drawViz);
+    }
+
+let lastFrameTime = performance.now();
+let frames = 0;
+let fps = 0;
+let fpsInterval;
+
+function drawVizFast() {
+  if (!analyser || !dataArr) return;
+
+  analyser.getByteTimeDomainData(dataArr);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'white';
+  ctx.beginPath();
+  const slice = canvas.width / dataArr.length;
+  let x = 0;
+  for (let i = 0; i < dataArr.length; i++) {
+    const y = (dataArr[i] / 128.0) * (canvas.height / 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    x += slice;
+  }
+  ctx.lineTo(canvas.width, canvas.height / 2);
+  ctx.stroke();
+
+  // FPS calculation
+  frames++;
+  const now = performance.now();
+  if (now - lastFrameTime >= 1000) {
+    fps = frames;
+    frames = 0;
+    lastFrameTime = now;
+    document.getElementById('fpsDisplay').textContent = `FPS: ${fps}`;
+  }
+
+  visualizerId = requestAnimationFrame(drawVizFast); // keep it going
+}
+
+
+    function startTimer(){
+      liveStart = Date.now();
+      recordBtn.textContent = `Stop Recording (00:00)`;
+      return setInterval(()=>{
+        const dur = Date.now()-liveStart;
+        recordBtn.textContent = `Stop Recording (${formatDuration(dur)})`;
+      },500);
+    }
+
+    async function startRecording(){
+      const {date,time} = getTS();
+      const timestamp = Date.now();
+      const id = await addRec({ filename:'', blob:new Blob(), timestamp, durationMs:0, needsConversion:false });
+      const title = `Recording ${id} (${date} ${time})`;
+      let rec = await (await dbPromise).get(STORE,id);
+      rec.filename = title;
+      await updateRec(rec);
+
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }});
+      audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser(); analyser.fftSize=2048;
+      const src = audioCtx.createMediaStreamSource(stream); src.connect(analyser);
+      dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+      createLiveRow(title);
+      canvas.style.display='block';
+     document.getElementById('fpsDisplay').style.display='block'
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+
+      mediaRecorder.onstop = async () => {
+        cancelAnimationFrame(visualizerId);
+        canvas.style.display='none';
+        document.getElementById('fpsDisplay').style.display='none';
+        stream.getTracks().forEach(t=>t.stop());
+        clearInterval(timer);
+        recordBtn.textContent = 'Start Recording';
+        const conversionRow = document.getElementById('live-row');
+        const rawBlob = new Blob(audioChunks, {type:'audio/webm'});
+        rec           = await (await dbPromise).get(STORE,id);
+        rec.rawBlob   = rawBlob;           // 💾 always keep the original
+        rec.blob      = rawBlob;
+        rec.durationMs= Date.now()-liveStart;
+        rec.needsConversion = true;       // flag for later
+        await updateRec(rec);
+
+        showConversionRow();
+        try {
+        const mp3 = await convertWebMtoMp3(rec.rawBlob, (pct, rem) => {
+          // update the bar on our live conversion row
+          conversionRow.progressBar.value = pct * 100;
+          conversionRow.estimateSpan.textContent =
+            `Processing raw audio (PCM) & converting to saved MP3, eta: ${formatDuration(rem * 1000)}`;
+        });
+
+
+          const finalDur = await new Promise(res=>{ const a=new Audio(URL.createObjectURL(mp3)); a.onloadedmetadata=()=>res(a.duration*1000); });
+          rec           = await (await dbPromise).get(STORE,id);
+          rec.blob      = mp3;
+          rec.durationMs= finalDur;
+          rec.needsConversion = false;
+          await updateRec(rec);
+        } catch(e){ console.error(e); }
+        document.getElementById('live-row')?.remove();
+        render();
+      };
+
+      mediaRecorder.start(1000);
+      //drawViz();//
+      drawVizFast();
+      timer = startTimer();
+    }
+
+    function stopRecording(){
+      if(mediaRecorder && mediaRecorder.state==='recording'){
+        mediaRecorder.requestData();
+        mediaRecorder.stop();
+      }
+    }
+
+    recordBtn.onclick = () => {
+      if(!mediaRecorder || mediaRecorder.state==='inactive'){
+        noSleep.enable();
+        recordBtn.classList.add('recording');
+        startRecording().catch(e=>{alert('microphone error: '+e); console.error(e);});
+      }else{
+        noSleep.disable();
+        recordBtn.classList.remove('recording');
+        stopRecording();
+      }
+    };
+
+    /* --------------------- AUTO‑CONVERT PENDING RECORDINGS ------------------ */
+   async function convertPending(){
+  const all = await getAll();
+  for(const rec of all){
+    if(rec.needsConversion && rec.rawBlob){
+      const row = document.getElementById(`rec-${rec.id}`);
+      if(row){
+        showPendingConversionRow(row, rec.filename);
+      }
+
+      try {
+        const mp3 = await convertWebMtoMp3(rec.rawBlob, (pct, rem) => {
+          row.progressBar.value = pct * 100;
+          row.estimateSpan.textContent =
+            `Converting to MP3, ETA: ${formatDuration(rem * 1000)}`;
+        });
+
+        const finalDur = await new Promise(res=>{
+          const a = new Audio(URL.createObjectURL(mp3));
+          a.onloadedmetadata = () => res(a.duration * 1000);
+        });
+
+        rec.blob = mp3;
+        rec.durationMs = finalDur;
+        rec.needsConversion = false;
+        await updateRec(rec);
+        render();
+      } catch(e){
+        console.error('Auto-conversion failed', e);
+      }
+    }
+  }
+}
+
+
+function showPendingConversionRow(row, title) {
+  row.innerHTML = '';
+  const td = (c, t) => Object.assign(document.createElement('td'), { className: c, textContent: t });
+
+  const deleteCell = td('td-delete', '');
+  const titleCell  = td('td-title', title);
+  const progressCell = document.createElement('td');
+  progressCell.className = 'progress-cell';
+
+  const progressBar = Object.assign(document.createElement('progress'), { max: 100, value: 0 });
+  const est = document.createElement('span');
+  est.textContent = 'Converting…';
+
+  progressCell.append(progressBar, est);
+  row.append(deleteCell, titleCell, progressCell);
+
+  row.progressBar = progressBar;
+  row.estimateSpan = est;
+}
+
+
+   
+
+    /* --------------------------- UNLOAD SAFETY ------------------------------ */
+    window.addEventListener('beforeunload', async () => {
+      if(mediaRecorder && mediaRecorder.state==='recording'){
+        mediaRecorder.requestData();
+        mediaRecorder.stop();
+      }
+    });
+
+    /* ------------------------------- STARTUP -------------------------------- */
+    window.addEventListener('load', async () => {
+      await render();
+     canvas.style.display='none';
+      convertPending();
+    });
+
+
+
+
+let originalCanvasWidth = canvas.width;
+let originalCanvasHeight = canvas.height;
+
+canvas.onclick = () => {
+  if (!document.fullscreenElement) {
+    // Save original size
+    originalCanvasWidth = canvas.width;
+    originalCanvasHeight = canvas.height;
+    
+    canvas.requestFullscreen().catch(err => {
+      alert(`⚠️ Fullscreen failed: ${err.message}`);
+    });
+  } else {
+    document.exitFullscreen();
+  }
+};
+
+document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement === canvas) {
+    // Go fullscreen: match screen dimensions
+    canvas.width = screen.width;
+    canvas.height = screen.height;
+  } else {
+    // Restore original dimensions
+    canvas.width = originalCanvasWidth;
+    canvas.height = originalCanvasHeight;
+  }
+});
+
+let wasFullscreen = false;
+
+window.addEventListener('orientationchange', () => {
+  if (document.fullscreenElement === canvas) {
+    wasFullscreen = true;
+    document.exitFullscreen().catch(e => console.warn('Exit fullscreen failed:', e));
+  } else if (wasFullscreen) {
+    wasFullscreen = false;
+    canvas.requestFullscreen().catch(e => console.warn('Re-enter fullscreen failed:', e));
+  }
+});
+
+
+
+  </script>
+
+
+</body>
+</html>
